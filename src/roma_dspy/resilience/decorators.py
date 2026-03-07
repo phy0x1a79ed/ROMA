@@ -58,12 +58,15 @@ def with_retry(
                     try:
                         return await func(*args, **kwargs)
                     except Exception as e:
-                        # Don't retry circuit open errors or cancellation
+                        # Don't retry circuit open errors, cancellation, or parse errors
+                        # (parse errors are handled by the parse-retry loop in runtime)
                         if isinstance(e, (CircuitOpenError, asyncio.CancelledError)):
+                            raise
+                        if type(e).__name__ == "AdapterParseError":
                             raise
 
                         last_exception = e
-                        
+
                         # Log retry attempts for debugging
                         max_retries = retry_policy.get_config_for_task(task_type).max_retries
                         logger.warning(
@@ -110,8 +113,11 @@ def with_retry(
                     try:
                         return func(*args, **kwargs)
                     except Exception as e:
-                        # Don't retry circuit open errors
+                        # Don't retry circuit open errors or parse errors
+                        # (parse errors are handled by the parse-retry loop in runtime)
                         if isinstance(e, CircuitOpenError):
+                            raise
+                        if type(e).__name__ == "AdapterParseError":
                             raise
 
                         last_exception = e

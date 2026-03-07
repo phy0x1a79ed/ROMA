@@ -25,9 +25,24 @@ class NodeType(str, Enum):
         return self.value
 
     @classmethod
+    def _missing_(cls, value):
+        """Handle common LLM variations like 'NodeType.EXECUTE', quoted values, etc."""
+        if isinstance(value, str):
+            cleaned = value.strip().strip("'\"")
+            # Strip class prefix: "NodeType.EXECUTE" → "EXECUTE"
+            dot = cleaned.rfind(".")
+            if dot != -1:
+                cleaned = cleaned[dot + 1:]
+            cleaned = cleaned.upper()
+            for member in cls:
+                if member.value == cleaned:
+                    return member
+        return None
+
+    @classmethod
     def from_string(cls, value: str) -> "NodeType":
         """
-        Convert string to NodeType.
+        Convert string to NodeType, handling common LLM variations.
 
         Args:
             value: String representation of node type
@@ -39,7 +54,7 @@ class NodeType(str, Enum):
             ValueError: If value is not a valid node type
         """
         try:
-            return cls(value.upper())
+            return cls(value)
         except ValueError:
             valid_types = [t.value for t in cls]
             raise ValueError(f"Invalid node type '{value}'. Valid types: {valid_types}")

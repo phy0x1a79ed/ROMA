@@ -22,6 +22,14 @@ from .decorators import (
     with_module_resilience,
     measure_execution_time,
 )
+from .parse_retry import (
+    ParseFailure,
+    ParseRetryError,
+    is_parse_error,
+    extract_error_feedback,
+    format_failed_attempts,
+    MAX_PARSE_RETRIES,
+)
 
 __all__ = [
     "RetryPolicy",
@@ -34,4 +42,10 @@ __all__ = [
     "with_circuit_breaker",
     "with_module_resilience",
     "measure_execution_time",
+    "ParseFailure",
+    "ParseRetryError",
+    "is_parse_error",
+    "extract_error_feedback",
+    "format_failed_attempts",
+    "MAX_PARSE_RETRIES",
 ]

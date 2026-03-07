@@ -31,6 +31,14 @@ from roma_dspy.core.observability import get_span_manager
 from roma_dspy.core.registry import AgentRegistry
 from roma_dspy.core.signatures import SubTask, TaskNode
 from roma_dspy.resilience import with_module_resilience, measure_execution_time
+from roma_dspy.resilience.parse_retry import (
+    ParseFailure,
+    ParseRetryError,
+    is_parse_error,
+    extract_error_feedback,
+    format_failed_attempts,
+    MAX_PARSE_RETRIES,
+)
 from roma_dspy.tools.base.manager import ToolkitManager
 from roma_dspy.types import ModuleResult, NodeType, TaskStatus, AgentType, TokenMetrics
 from roma_dspy.types.artifact_injection import ArtifactInjectionMode
@@ -447,48 +455,67 @@ class ModuleRuntime:
                 # Atomizer, Verifier use fundamental context only (no artifacts)
                 context = self.context_manager.build_basic_context(task, tools_data)
 
-        try:
-            start_time = time.time()
-            module_kwargs = prepare_module_kwargs(task, context)
+        parse_failures: list[ParseFailure] = []
 
-            # Preserve existing DSPy callbacks via dspy_context parameter
-            existing_callbacks = (
-                list(dspy.settings.callbacks)
-                if hasattr(dspy.settings, "callbacks")
-                else []
-            )
-            module_kwargs["dspy_context"] = {"callbacks": existing_callbacks}
+        for _parse_attempt in range(MAX_PARSE_RETRIES + 1):
+            try:
+                start_time = time.time()
+                module_kwargs = prepare_module_kwargs(task, context)
 
-            # Execute with ROMA span wrapper
-            span_manager = get_span_manager()
-            with span_manager.create_span(agent_type, task, agent.__class__.__name__):
-                (
-                    result,
-                    duration,
-                    token_metrics,
-                    messages,
-                ) = await self._async_execute_module(agent, **module_kwargs)
+                # Inject failed-attempt feedback on retries
+                if parse_failures:
+                    feedback_xml = format_failed_attempts(parse_failures)
+                    ctx = module_kwargs.get("context") or ""
+                    module_kwargs["context"] = f"{ctx}\n\n{feedback_xml}" if ctx else feedback_xml
 
-            # Persist LM trace
-            execution_id, postgres = self.context_store.get_execution_context()
-            if postgres and execution_id:
-                await self._persist_lm_trace(
-                    execution_id, postgres, agent, result, start_time, task.task_id
+                # Preserve existing DSPy callbacks via dspy_context parameter
+                existing_callbacks = (
+                    list(dspy.settings.callbacks)
+                    if hasattr(dspy.settings, "callbacks")
+                    else []
                 )
+                module_kwargs["dspy_context"] = {"callbacks": existing_callbacks}
 
-            # Artifact detection (multi-layer approach):
-            # 1. Priority registration: DataStorage.store_parquet (already runs automatically)
-            # 2. Tool output detection: track_tool_invocation decorator (already runs automatically)
-            # 3. Text parser: Parse LLM output for explicit artifact declarations (MD/JSON/XML)
-            # 4. Filesystem scanner: Scan for any remaining files not caught by above layers (fallback)
-            await self._run_text_parser(task, result)
-            await self._run_filesystem_scanner(task, start_time)
+                # Execute with ROMA span wrapper
+                span_manager = get_span_manager()
+                with span_manager.create_span(agent_type, task, agent.__class__.__name__):
+                    (
+                        result,
+                        duration,
+                        token_metrics,
+                        messages,
+                    ) = await self._async_execute_module(agent, **module_kwargs)
 
-            return process_result(task, result, duration, token_metrics, messages, dag)
+                # Persist LM trace
+                execution_id, postgres = self.context_store.get_execution_context()
+                if postgres and execution_id:
+                    await self._persist_lm_trace(
+                        execution_id, postgres, agent, result, start_time, task.task_id
+                    )
 
-        except Exception as e:
-            self._enhance_error_context(e, agent_type, task)
-            raise
+                await self._run_text_parser(task, result)
+                await self._run_filesystem_scanner(task, start_time)
+
+                return process_result(task, result, duration, token_metrics, messages, dag)
+
+            except Exception as e:
+                if is_parse_error(e) and _parse_attempt < MAX_PARSE_RETRIES:
+                    raw, msg = extract_error_feedback(e)
+                    parse_failures.append(ParseFailure(
+                        raw_response=raw, error_message=msg, attempt=_parse_attempt,
+                    ))
+                    logger.warning(
+                        "Parse retry %d/%d for %s: %s",
+                        _parse_attempt + 1, MAX_PARSE_RETRIES,
+                        agent_type.value, msg[:200],
+                    )
+                    continue
+
+                # Non-parse error or retries exhausted
+                if parse_failures:
+                    raise ParseRetryError(parse_failures, e) from e
+                self._enhance_error_context(e, agent_type, task)
+                raise
 
     # ------------------------------------------------------------------
     # Core module execution helpers
@@ -502,16 +529,26 @@ class ModuleRuntime:
             return {"goal": t.goal, "context": context}
 
         def process_result(t, result, duration, token_metrics, messages, dag):
+            node_type = getattr(result, "node_type", None)
+            if node_type is None:
+                raise ValueError(
+                    "Atomizer output missing 'node_type'. Must be PLAN or EXECUTE."
+                )
+            # Guard: if DSPy returned a string instead of enum
+            if isinstance(node_type, str):
+                node_type = NodeType.from_string(node_type)
+            is_atomic = bool(getattr(result, "is_atomic", node_type == NodeType.EXECUTE))
+
             t = self._record_module_result(
                 t,
                 "atomizer",
                 t.goal,
-                {"is_atomic": result.is_atomic, "node_type": result.node_type.value},
+                {"is_atomic": is_atomic, "node_type": node_type.value},
                 duration,
                 token_metrics=token_metrics,
                 messages=messages,
             )
-            t = t.set_node_type(result.node_type)
+            t = t.set_node_type(node_type)
             dag.update_node(t)
             return t
 
@@ -536,13 +573,19 @@ class ModuleRuntime:
             return {"goal": t.goal, "context": context}
 
         def process_result(t, result, duration, token_metrics, messages, dag):
+            subtasks = getattr(result, "subtasks", None)
+            if not subtasks or not isinstance(subtasks, list):
+                raise ValueError(
+                    f"Planner output 'subtasks' must be a non-empty list, "
+                    f"got: {type(subtasks).__name__ if subtasks is not None else 'None'}"
+                )
             t = self._record_module_result(
                 t,
                 "planner",
                 t.goal,
                 {
-                    "subtasks": [s.model_dump() for s in result.subtasks],
-                    "dependencies": result.dependencies_graph,
+                    "subtasks": [s.model_dump() for s in subtasks],
+                    "dependencies": getattr(result, "dependencies_graph", None),
                 },
                 duration,
                 token_metrics=token_metrics,
@@ -579,6 +622,10 @@ class ModuleRuntime:
             messages: Any,
             dag: TaskDAG,
         ) -> TaskNode:
+            output = getattr(result, "output", None)
+            if output is None:
+                raise ValueError("Executor output missing required field 'output'.")
+
             # Record with context metadata
             metadata = {}
             if context_captured and isinstance(context_captured, str):
@@ -597,7 +644,7 @@ class ModuleRuntime:
                 t,
                 "executor",
                 t.goal,
-                result.output,
+                output,
                 duration,
                 metadata=metadata,
                 token_metrics=token_metrics,
@@ -605,7 +652,7 @@ class ModuleRuntime:
             )
             # Store the result but keep status as EXECUTING so the verifier
             # can transition to VERIFYING.  COMPLETED is terminal.
-            t = t.model_copy(update={"result": result.output})
+            t = t.model_copy(update={"result": output})
             dag.update_node(t)
             return t
 
@@ -643,6 +690,10 @@ class ModuleRuntime:
             messages: Any,
             dag: TaskDAG,
         ) -> TaskNode:
+            output = getattr(result, "output", None)
+            if output is None:
+                raise ValueError("Executor output missing required field 'output'.")
+
             # Record with context metadata (forced execution has additional metadata)
             metadata = {"forced": True, "depth": t.depth}
             if context_captured and isinstance(context_captured, str):
@@ -661,7 +712,7 @@ class ModuleRuntime:
                 t,
                 "executor",
                 t.goal,
-                result.output,
+                output,
                 duration,
                 metadata=metadata,
                 token_metrics=token_metrics,
@@ -669,7 +720,7 @@ class ModuleRuntime:
             )
             # Store the result but keep status as EXECUTING so the verifier
             # can transition to VERIFYING.  COMPLETED is terminal.
-            t = t.model_copy(update={"result": result.output})
+            t = t.model_copy(update={"result": output})
             dag.update_node(t)
             return t
 
@@ -713,18 +764,24 @@ class ModuleRuntime:
             messages: Any,
             dag: TaskDAG,
         ) -> TaskNode:
+            synthesized = getattr(result, "synthesized_result", None)
+            if synthesized is None:
+                raise ValueError(
+                    "Aggregator output missing required field 'synthesized_result'."
+                )
+
             t = self._record_module_result(
                 t,
                 "aggregator",
                 {"original_goal": t.goal, "subtask_count": len(subtask_results)},
-                result.synthesized_result,
+                synthesized,
                 duration,
                 token_metrics=token_metrics,
                 messages=messages,
             )
             # Store the result but keep status as AGGREGATING so the verifier
             # can transition to VERIFYING.  COMPLETED is terminal.
-            t = t.model_copy(update={"result": result.synthesized_result})
+            t = t.model_copy(update={"result": synthesized})
             dag.update_node(t)
             return t
 
