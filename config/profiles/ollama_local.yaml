@@ -1,0 +1,49 @@
+# Ollama local profile for Spark development
+# Routes all ROMA agents to a local Ollama instance
+
+agents:
+  atomizer:
+    llm:
+      model: ollama_chat/gpt-oss:20b
+      base_url: http://172.25.176.1:11434
+      temperature: 0.1
+
+  planner:
+    llm:
+      model: ollama_chat/gpt-oss:20b
+      base_url: http://172.25.176.1:11434
+      temperature: 0.3
+    agent_config:
+      max_subtasks: 8
+
+  executor:
+    llm:
+      model: ollama_chat/gpt-oss:20b
+      base_url: http://172.25.176.1:11434
+      temperature: 0.6
+      max_tokens: 4000
+    prediction_strategy: react
+    agent_config:
+      max_executions: 10
+
+  aggregator:
+    llm:
+      model: ollama_chat/gpt-oss:20b
+      base_url: http://172.25.176.1:11434
+      temperature: 0.3
+
+  verifier:
+    llm:
+      model: ollama_chat/gpt-oss:20b
+      base_url: http://172.25.176.1:11434
+      temperature: 0.1
+
+runtime:
+  timeout: 900
+  max_depth: 3
+  verbose: false
+  enable_logging: false
+
+storage:
+  postgres:
+    enabled: false

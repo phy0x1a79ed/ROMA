@@ -18,17 +18,14 @@ from roma_dspy.types.task_type import TaskType
 
 
 PLANNER_PROMPT = r"""
-# Planner — Instruction Prompt
+# Planner -- Instruction Prompt
 
 Role
 Plan a goal into minimal, parallelizable subtasks with a precise, acyclic dependency graph. Do not execute; only plan.
 
-Available Tools
-If web search tools are available to you, you can use them during planning to:
-- Research current events, trends, or market data when planning tasks that require up-to-date information
-- Verify task requirements or gather context before decomposing complex goals
-- Find relevant documentation, best practices, or domain-specific knowledge to inform your planning
-- Improve the quality and accuracy of RETRIEVE task definitions
+If `context` is provided, use it to understand constraints, available resources, or prior results that should inform the decomposition.
+
+Before decomposing, identify the goal's key requirements and constraints to determine the right level of granularity.
 
 Output Contract (strict)
 - Return only: `subtasks` and `dependencies_graph`. No extra keys, no prose.
@@ -45,14 +42,14 @@ Output Contract (strict)
 
 Task Type Guidance (MECE)
 - THINK: reasoning, derivations, comparisons, validations; no external retrieval.
-- RETRIEVE: fetch/verify external info where freshness, citations, or lookup are essential (replaces "SEARCH").
+- RETRIEVE: fetch/verify external info where freshness, citations, or lookup are essential.
 - WRITE: produce prose/structured text when inputs are known (emails, outlines, drafts, summaries).
 
 Decomposition Principles
 - Minimality: Decompose only as much as necessary to reach the goal.
 - MECE: Subtasks should not overlap; together they fully cover the goal.
-- Parallelization: Prefer independent subtasks with a final synthesis step; add dependencies only when required.
-- Granularity: For common tasks, prefer 3–8 total subtasks; keep the number of artefact-producing steps (WRITE/CODE_INTERPRET/IMAGE_GENERATION) to 1–5 unless complexity justifies more.
+- Parallelization: Prefer wide DAGs over deep chains -- maximize independent subtasks with a final synthesis step. Add dependencies only when a subtask genuinely needs another's output.
+- Granularity: Prefer 3-8 subtasks for common goals; keep artefact-producing steps to 1-5 unless complexity justifies more.
 - Determinism: Each subtask should have a clear, verifiable completion condition.
 
 Dependency Rules
@@ -64,17 +61,10 @@ Dependency Rules
 Context Flow
 - Outputs from dependencies are available to dependents; do not recompute.
 - When a dependent needs specific artefacts (numbers, citations, outlines), state this succinctly in `context_input`.
-- Numeric values from other subtasks are provided after those subtasks complete; reference them rather than re-deriving.
 
 Edge Cases
-- If the goal is already atomic, return the minimal valid plan (often 1–3 subtasks) rather than inflating to 3–8.
+- If the goal is already atomic, return the minimal valid plan (often 1-3 subtasks) rather than inflating.
 - If key requirements are unspecified, add an early THINK step to enumerate assumptions or a RETRIEVE step to collect missing facts.
-
-Strict Output Shape
-{
-  "subtasks": [SubTask, ...],
-  "dependencies_graph": {"<id>": ["<id>", ...], ...} | {}
-}
 
 Do not execute any steps, and do not include reasoning or commentary in the output.
 """
@@ -111,7 +101,7 @@ PLANNER_DEMOS = [
             ),
             SubTask(
                 goal=(
-                    "Format as 'BTCUSD: <price> USD — <source> <timestamp>' ensuring the timestamp is recent."
+                    "Format as 'BTCUSD: <price> USD -- <source> <timestamp>' ensuring the timestamp is recent."
                 ),
                 task_type=TaskType.WRITE,
                 dependencies=["0"],
@@ -129,7 +119,7 @@ PLANNER_DEMOS = [
                 goal=(
                     "Draft a clear 1-page privacy policy for a personal blog with headings: "
                     "'Data Collected', 'Use of Data', 'Third-Party Services', 'Data Retention', 'Contact'. "
-                    "Neutral tone, plain English, ≤ 450 words."
+                    "Neutral tone, plain English, <= 450 words."
                 ),
                 task_type=TaskType.WRITE,
                 dependencies=[],
@@ -137,7 +127,7 @@ PLANNER_DEMOS = [
             SubTask(
                 goal=(
                     "Draft a concise cookie policy for the blog covering cookie types, purposes (analytics, preferences), "
-                    "opt-out instructions, and update date. Neutral tone, ≤ 450 words."
+                    "opt-out instructions, and update date. Neutral tone, <= 450 words."
                 ),
                 task_type=TaskType.WRITE,
                 dependencies=[],
@@ -157,7 +147,7 @@ PLANNER_DEMOS = [
 
     # 4) Dual retrieval then synthesis and finalization (RETRIEVE, RETRIEVE -> THINK -> WRITE)
     dspy.Example(
-        goal="Collect Apple and Microsoft’s latest quarterly results and compare their guidance side-by-side.",
+        goal="Collect Apple and Microsoft's latest quarterly results and compare their guidance side-by-side.",
         subtasks=[
             SubTask(
                 goal=(
@@ -188,7 +178,7 @@ PLANNER_DEMOS = [
             ),
             SubTask(
                 goal=(
-                    "Wrap the table with a 2–3 sentence summary and list citations underneath."
+                    "Wrap the table with a 2-3 sentence summary and list citations underneath."
                 ),
                 task_type=TaskType.WRITE,
                 dependencies=["2"],
@@ -198,4 +188,3 @@ PLANNER_DEMOS = [
         dependencies_graph={"0": [], "1": [], "2": ["0", "1"], "3": ["2"]},
     ).with_inputs("goal"),
 ]
-
