@@ -56,6 +56,7 @@ class RecursiveSolver:
         enable_logging: bool = False,
         enable_checkpoints: bool = True,
         checkpoint_config: Optional[CheckpointConfig] = None,
+        max_verify_retries: int = 2,
     ):
         """
         Initialize the recursive solver.
@@ -67,6 +68,7 @@ class RecursiveSolver:
             enable_logging: Whether to enable debug logging
             enable_checkpoints: Whether to enable checkpointing
             checkpoint_config: Checkpoint configuration (overrides config)
+            max_verify_retries: Max times the verifier can reject and retry a task
         """
         # Store config for later use (needed for FileStorage creation)
         self.config = config
@@ -82,6 +84,8 @@ class RecursiveSolver:
             self.max_depth = max_depth or config.runtime.max_depth
         else:
             raise ValueError("Either 'config' or 'registry' must be provided")
+
+        self.max_verify_retries = max_verify_retries
 
         # Initialize Postgres storage if enabled and available
         self.postgres_storage = None
@@ -720,6 +724,7 @@ class RecursiveSolver:
                 priority_fn=priority_fn,
                 checkpoint_manager=self.checkpoint_manager,
                 postgres_storage=self.postgres_storage,
+                max_verify_retries=self.max_verify_retries,
             )
 
             # Apply any pending state restorations from previous recovery operations
@@ -948,7 +953,11 @@ class RecursiveSolver:
         # Check for forced execution at max depth
         if task.should_force_execute():
             logger.debug(f"Force executing task at max depth: {task.depth}")
-            return await self.runtime.force_execute_async(task, dag)
+            task = await self.runtime.force_execute_async(task, dag)
+            task = await self.runtime.verify_async(task, dag)
+            task = task.with_result(task.result)
+            dag.update_node(task)
+            return task
 
         # Process based on current state
         if task.status == TaskStatus.PENDING:
@@ -980,6 +989,10 @@ class RecursiveSolver:
         if task.status == TaskStatus.EXECUTING:
             logger.debug(f"Async executing task: {task.goal[:50]}...")
             task = await self.runtime.execute_async(task, dag)
+            # Verify + complete (execute no longer auto-completes)
+            task = await self.runtime.verify_async(task, dag)
+            task = task.with_result(task.result)
+            dag.update_node(task)
         elif task.status == TaskStatus.PLAN_DONE:
             # Create checkpoint before aggregation (preserve completed subtasks)
             if self.checkpoint_manager:

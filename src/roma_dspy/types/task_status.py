@@ -13,13 +13,14 @@ class TaskStatus(str, Enum):
     Status of a task node in the execution graph.
 
     State transition flow:
-    PENDING → ATOMIZING → (PLANNING | EXECUTING) → (PLAN_DONE | AGGREGATING) → COMPLETED
+    PENDING → ATOMIZING → (PLANNING | EXECUTING) → (PLAN_DONE | AGGREGATING) → VERIFYING → COMPLETED
 
     Special states:
     - ATOMIZING: Determining if task is atomic or needs decomposition
     - PLANNING: Decomposing task into subtasks
     - PLAN_DONE: Planning complete, subtasks ready for execution
     - AGGREGATING: Parent collecting results from completed children
+    - VERIFYING: Verifier agent validating result against goal
     - NEEDS_REPLAN: Triggers replanning when children fail
     """
 
@@ -30,6 +31,7 @@ class TaskStatus(str, Enum):
     READY = "READY"  # Dependencies satisfied, ready to execute
     EXECUTING = "EXECUTING"  # Currently being processed
     AGGREGATING = "AGGREGATING"  # Parent collecting child results
+    VERIFYING = "VERIFYING"  # Result validation by verifier agent
     COMPLETED = "COMPLETED"  # Successfully finished
     FAILED = "FAILED"  # Execution failed
     NEEDS_REPLAN = "NEEDS_REPLAN"  # Requires replanning due to failure
@@ -72,6 +74,7 @@ class TaskStatus(str, Enum):
             TaskStatus.PLANNING,
             TaskStatus.EXECUTING,
             TaskStatus.AGGREGATING,
+            TaskStatus.VERIFYING,
         }
 
     @property
@@ -101,9 +104,19 @@ class TaskStatus(str, Enum):
                 TaskStatus.COMPLETED,
                 TaskStatus.FAILED,
                 TaskStatus.AGGREGATING,
+                TaskStatus.VERIFYING,
                 TaskStatus.NEEDS_REPLAN,
             },
-            TaskStatus.AGGREGATING: {TaskStatus.COMPLETED, TaskStatus.FAILED},
+            TaskStatus.AGGREGATING: {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.VERIFYING,
+            },
+            TaskStatus.VERIFYING: {
+                TaskStatus.COMPLETED,
+                TaskStatus.PENDING,
+                TaskStatus.FAILED,
+            },
             TaskStatus.NEEDS_REPLAN: {
                 TaskStatus.PLANNING,
                 TaskStatus.READY,
@@ -137,6 +150,7 @@ TaskStatusLiteral = Literal[
     "READY",
     "EXECUTING",
     "AGGREGATING",
+    "VERIFYING",
     "COMPLETED",
     "FAILED",
     "NEEDS_REPLAN",

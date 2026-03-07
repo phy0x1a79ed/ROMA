@@ -598,7 +598,9 @@ class ModuleRuntime:
                 token_metrics=token_metrics,
                 messages=messages,
             )
-            t = t.with_result(result.output)
+            # Store the result but keep status as EXECUTING so the verifier
+            # can transition to VERIFYING.  COMPLETED is terminal.
+            t = t.model_copy(update={"result": result.output})
             dag.update_node(t)
             return t
 
@@ -660,7 +662,9 @@ class ModuleRuntime:
                 token_metrics=token_metrics,
                 messages=messages,
             )
-            t = t.with_result(result.output)
+            # Store the result but keep status as EXECUTING so the verifier
+            # can transition to VERIFYING.  COMPLETED is terminal.
+            t = t.model_copy(update={"result": result.output})
             dag.update_node(t)
             return t
 
@@ -713,12 +717,68 @@ class ModuleRuntime:
                 token_metrics=token_metrics,
                 messages=messages,
             )
-            t = t.with_result(result.synthesized_result)
+            # Store the result but keep status as AGGREGATING so the verifier
+            # can transition to VERIFYING.  COMPLETED is terminal.
+            t = t.model_copy(update={"result": result.synthesized_result})
             dag.update_node(t)
             return t
 
         return await self._execute_agent_with_tracing(
             AgentType.AGGREGATOR,
+            task,
+            dag,
+            prepare_module_kwargs=prepare_kwargs,
+            process_result=process_result,
+        )
+
+    async def verify_async(self, task: TaskNode, dag: TaskDAG) -> TaskNode:
+        """Run the Verifier agent to validate the task's result against its goal.
+
+        Transitions the task to VERIFYING, calls the verifier, and stores
+        verdict + feedback in task metadata.  The caller is responsible for
+        transitioning to COMPLETED or retrying based on the verdict.
+        """
+        task = task.transition_to(TaskStatus.VERIFYING)
+        dag.update_node(task)
+
+        candidate_output = str(task.result) if task.result is not None else ""
+
+        def prepare_kwargs(t: TaskNode, context: Optional[str]) -> dict:
+            return {
+                "goal": t.goal,
+                "candidate_output": candidate_output,
+                "context": context,
+            }
+
+        def process_result(
+            t: TaskNode,
+            result: Any,
+            duration: float,
+            token_metrics: Any,
+            messages: Any,
+            dag: TaskDAG,
+        ) -> TaskNode:
+            verdict = bool(getattr(result, "verdict", True))
+            feedback = getattr(result, "feedback", None) or ""
+
+            t = self._record_module_result(
+                t,
+                "verifier",
+                {"goal": t.goal, "candidate_output": candidate_output},
+                {"verdict": verdict, "feedback": feedback},
+                duration,
+                token_metrics=token_metrics,
+                messages=messages,
+            )
+            t = t.update_metadata(
+                verify_verdict=verdict,
+                verify_feedback=feedback,
+            )
+            dag.update_node(t)
+            return t
+
+        return await self._execute_agent_with_tracing(
+            AgentType.VERIFIER,
             task,
             dag,
             prepare_module_kwargs=prepare_kwargs,
@@ -739,6 +799,10 @@ class ModuleRuntime:
         if subgraph:
             await self.solve_subgraph_async(subgraph, solve_fn)
             task = await self.aggregate_async(task, subgraph, dag)
+            # Verify + complete (aggregate no longer auto-completes)
+            task = await self.verify_async(task, dag)
+            task = task.with_result(task.result)
+            dag.update_node(task)
         return task
 
     async def solve_subgraph_async(

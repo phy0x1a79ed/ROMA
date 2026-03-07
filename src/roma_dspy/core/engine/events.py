@@ -14,6 +14,7 @@ class EventType(Enum):
     COMPLETED = auto()
     FAILED = auto()
     SUBGRAPH_COMPLETE = auto()
+    VERIFY = auto()
     STOP = auto()
 
 

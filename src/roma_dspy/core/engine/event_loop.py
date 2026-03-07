@@ -31,10 +31,12 @@ class EventLoopController:
         checkpoint_manager: Optional[CheckpointManager] = None,
         max_queue_size: int = 1000,
         postgres_storage: Optional[Any] = None,
+        max_verify_retries: int = 2,
     ) -> None:
         self.dag = dag
         self.runtime = runtime
         self.max_queue_size = max_queue_size
+        self.max_verify_retries = max_verify_retries
         self.postgres_storage = postgres_storage
         self._queued: Set[Tuple[str, str]] = set()  # (dag_id, task_id)
         self.scheduler = EventScheduler(
@@ -50,6 +52,7 @@ class EventLoopController:
             EventType.SUBGRAPH_COMPLETE, self._handle_subgraph_complete
         )
         self.scheduler.register_processor(EventType.FAILED, self._handle_failed)
+        self.scheduler.register_processor(EventType.VERIFY, self._handle_verify)
 
         # Initialize checkpoint manager for recovery - respect disabled state
         self.checkpoint_manager = checkpoint_manager  # Don't create if None (disabled)
@@ -69,6 +72,7 @@ class EventLoopController:
                 "ready": 0,
                 "completed": 0,
                 "subgraph": 0,
+                "verify": 0,
                 "failed": 0,
             },
         }
@@ -259,6 +263,14 @@ class EventLoopController:
             dag_id=dag.dag_id,
         )
 
+    def _make_verify_event(self, task: TaskNode, dag: TaskDAG) -> TaskEvent:
+        return TaskEvent(
+            priority=self.scheduler.priority_for(task),
+            event_type=EventType.VERIFY,
+            task_id=task.task_id,
+            dag_id=dag.dag_id,
+        )
+
     async def _handle_ready(self, event: TaskEvent) -> Optional[TaskEvent]:
         # Track event processing stats
         self._event_stats["events_processed"] += 1
@@ -297,7 +309,7 @@ class EventLoopController:
 
         if task.should_force_execute():
             updated = await self.runtime.force_execute_async(task, owning_dag)
-            return self._make_completed_event(updated, owning_dag)
+            return self._make_verify_event(updated, owning_dag)
 
         if task.status == TaskStatus.PENDING:
             task = await self.runtime.atomize_async(task, owning_dag)
@@ -326,7 +338,7 @@ class EventLoopController:
 
         if task.status == TaskStatus.EXECUTING:
             task = await self.runtime.execute_async(task, owning_dag)
-            return self._make_completed_event(task, owning_dag)
+            return self._make_verify_event(task, owning_dag)
 
         if task.status == TaskStatus.AGGREGATING:
             # Checkpoint before aggregation as it's a critical operation
@@ -335,7 +347,7 @@ class EventLoopController:
                 owning_dag.get_subgraph(task.subgraph_id) if task.subgraph_id else None
             )
             task = await self.runtime.aggregate_async(task, subgraph, owning_dag)
-            return self._make_completed_event(task, owning_dag)
+            return self._make_verify_event(task, owning_dag)
 
         return None
 
@@ -397,7 +409,66 @@ class EventLoopController:
         )
         task = await self.runtime.aggregate_async(task, subgraph, owning_dag)
         await self.enqueue_ready_tasks()
-        return self._make_completed_event(task, owning_dag)
+        return self._make_verify_event(task, owning_dag)
+
+    async def _handle_verify(self, event: TaskEvent) -> Optional[TaskEvent]:
+        """Run the verifier agent.  On rejection, retry by re-atomising with feedback."""
+        self._event_stats["events_processed"] += 1
+        self._events_since_checkpoint += 1
+
+        if not event.task_id or not event.dag_id:
+            return None
+
+        owning_dag = self._resolve_dag(event.dag_id)
+        if owning_dag is None:
+            return None
+
+        try:
+            task = owning_dag.get_node(event.task_id)
+        except ValueError:
+            return None
+
+        # Run verifier — transitions task to VERIFYING internally
+        task = await self.runtime.verify_async(task, owning_dag)
+
+        verdict = (task.metadata or {}).get("verify_verdict", True)
+        retry_count = (task.metadata or {}).get("verify_retry", 0)
+
+        if verdict:
+            # Accepted — transition to COMPLETED
+            task = task.with_result(task.result)
+            owning_dag.update_node(task)
+            return self._make_completed_event(task, owning_dag)
+
+        # Rejected — check retry budget
+        if retry_count >= self.max_verify_retries:
+            logger.warning(
+                "Verifier rejected task %s after %d retries, accepting anyway",
+                task.task_id,
+                retry_count,
+            )
+            task = task.with_result(task.result)
+            owning_dag.update_node(task)
+            return self._make_completed_event(task, owning_dag)
+
+        # Retry: reset task to PENDING so it re-enters the atomize→execute pipeline.
+        # Inject verifier feedback so the next attempt can improve.
+        feedback = (task.metadata or {}).get("verify_feedback", "")
+        logger.info(
+            "Verifier rejected task %s (retry %d/%d): %s",
+            task.task_id,
+            retry_count + 1,
+            self.max_verify_retries,
+            feedback[:200],
+        )
+        task = task.update_metadata(verify_retry=retry_count + 1)
+        task = task.transition_to(TaskStatus.PENDING)
+        owning_dag.update_node(task)
+
+        key = (owning_dag.dag_id, task.task_id)
+        self._queued.discard(key)
+        self._queued.add(key)
+        return self._make_ready_event(task, owning_dag)
 
     async def _handle_failed(self, event: TaskEvent) -> Optional[TaskEvent]:
         # Track event processing stats
@@ -570,6 +641,7 @@ class EventLoopController:
                 "ready": 0,
                 "completed": 0,
                 "subgraph": 0,
+                "verify": 0,
                 "failed": 0,
             },
         }
