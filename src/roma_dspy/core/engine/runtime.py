@@ -820,7 +820,11 @@ class ModuleRuntime:
             messages: Any,
             dag: TaskDAG,
         ) -> TaskNode:
-            verdict = bool(getattr(result, "verdict", True))
+            raw_verdict = getattr(result, "verdict", True)
+            if isinstance(raw_verdict, str):
+                verdict = raw_verdict.strip().lower() in ("true", "1", "yes")
+            else:
+                verdict = bool(raw_verdict)
             feedback = getattr(result, "feedback", None) or ""
 
             t = self._record_module_result(

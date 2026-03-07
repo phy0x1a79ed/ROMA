@@ -11,6 +11,9 @@ class AtomizerSignature(dspy.Signature):
     context: Optional[str] = dspy.InputField(
         default=None, description="Execution context (XML)"
     )
+    explanation: str = dspy.OutputField(
+        description="Brief reasoning about whether this task is atomic or needs decomposition"
+    )
     is_atomic: bool = dspy.OutputField(
         description="True if task can be executed directly"
     )
@@ -32,6 +35,9 @@ class PlannerSignature(dspy.Signature):
     context: Optional[str] = dspy.InputField(
         default=None, description="Execution context (XML)"
     )
+    explanation: str = dspy.OutputField(
+        description="Brief reasoning about how to decompose this task"
+    )
     subtasks: List[SubTask] = dspy.OutputField(
         description="List of generated subtasks from planner"
     )
@@ -51,6 +57,9 @@ class ExecutorSignature(dspy.Signature):
     goal: str = dspy.InputField(description="Task that needs to be executed")
     context: Optional[str] = dspy.InputField(
         default=None, description="Execution context (XML)"
+    )
+    explanation: str = dspy.OutputField(
+        description="Brief reasoning about how to execute this task"
     )
     output: str = dspy.OutputField(description="Execution result")
     sources: Optional[List[str]] = dspy.OutputField(
@@ -72,6 +81,9 @@ class AggregatorSignature(dspy.Signature):
     context: Optional[str] = dspy.InputField(
         default=None, description="Execution context (XML)"
     )
+    explanation: str = dspy.OutputField(
+        description="Brief reasoning about how to synthesize subtask results"
+    )
     synthesized_result: str = dspy.OutputField(description="Final synthesized output")
 
 
@@ -84,6 +96,9 @@ class VerifierSignature(dspy.Signature):
     )
     context: Optional[str] = dspy.InputField(
         default=None, description="Execution context (XML)"
+    )
+    explanation: str = dspy.OutputField(
+        description="Brief analysis of whether the output satisfies the goal"
     )
     verdict: bool = dspy.OutputField(
         description="True if the candidate output satisfies the goal"
