@@ -13,6 +13,7 @@ from datetime import datetime
 
 from loguru import logger
 
+from roma_dspy.types import TokenMetrics
 from roma_dspy.types.task_type import TaskType
 from roma_dspy.types.task_status import TaskStatus
 from roma_dspy.types.resilience_types import CircuitOpenError, CircuitState
@@ -282,6 +283,53 @@ def measure_execution_time(func: F) -> F:
         Decorated function with timing measurement, metrics extraction, and logging
     """
 
+    def _extract_from_lm_history(args, kwargs, history_before):
+        """Extract messages and token metrics from lm.history entries added during execution.
+
+        The decorated function is _async_execute_module(self, module, *args, **kwargs)
+        where self=ModuleRuntime (args[0]) and module=BaseModule agent (args[1]).
+        The agent's LM is accessible via module._lm.
+        """
+        module = args[1] if len(args) > 1 else kwargs.get("module")
+        lm = getattr(module, "_lm", None) if module else None
+        if not lm or not hasattr(lm, "history") or len(lm.history) <= history_before:
+            return None, None, kwargs.get("context")
+
+        new_entries = lm.history[history_before:]
+        messages = []
+        total_prompt, total_completion, total_total = 0, 0, 0
+
+        for entry in new_entries:
+            call_record = {
+                "messages": entry.get("messages") or [],
+                "outputs": entry.get("outputs") or [],
+                "model": entry.get("model", ""),
+                "usage": entry.get("usage") or {},
+            }
+            messages.append(call_record)
+            u = entry.get("usage") or {}
+            total_prompt += u.get("prompt_tokens", 0) or 0
+            total_completion += u.get("completion_tokens", 0) or 0
+            total_total += u.get("total_tokens", 0) or 0
+
+        token_metrics = TokenMetrics(
+            prompt_tokens=total_prompt,
+            completion_tokens=total_completion,
+            total_tokens=total_total,
+            model=lm.history[-1].get("model", "") if lm.history else "",
+        )
+
+        context_xml = kwargs.get("context")
+        return messages, token_metrics, context_xml
+
+    def _snapshot_history_len(args, kwargs):
+        """Get current lm.history length before execution."""
+        module = args[1] if len(args) > 1 else kwargs.get("module")
+        lm = getattr(module, "_lm", None) if module else None
+        if lm and hasattr(lm, "history"):
+            return len(lm.history)
+        return 0
+
     if asyncio.iscoroutinefunction(func):
 
         @functools.wraps(func)
@@ -296,24 +344,35 @@ def measure_execution_time(func: F) -> F:
                 f"{context_name} async starting | args_count={len(args)} | kwargs={list(kwargs.keys())}"
             )
 
+            # Snapshot lm.history length before execution
+            history_before = _snapshot_history_len(args, kwargs)
+
             start_time = datetime.now()
             try:
                 result = await func(*args, **kwargs)
                 duration = (datetime.now() - start_time).total_seconds()
 
-                # Extract metrics from result object
-                token_metrics = getattr(result, "token_metrics", None) or getattr(
-                    result, "token_usage", None
+                # Extract from lm.history (primary source — always has the data)
+                messages, token_metrics, context_xml = _extract_from_lm_history(
+                    args, kwargs, history_before
                 )
-                messages = getattr(result, "messages", None)
+
+                # Fallback to result attributes if lm.history extraction failed
+                if messages is None:
+                    messages = getattr(result, "messages", None)
+                if token_metrics is None:
+                    token_metrics = getattr(result, "token_metrics", None) or getattr(
+                        result, "token_usage", None
+                    )
 
                 # Log successful completion with metrics
                 log_msg = f"{context_name} async completed | duration={duration:.2f}s"
                 if token_metrics:
-                    log_msg += f" | tokens={getattr(token_metrics, 'total', 'N/A')}"
+                    total = getattr(token_metrics, "total_tokens", None) or getattr(token_metrics, "total", "N/A")
+                    log_msg += f" | tokens={total}"
                 logger.info(log_msg)
 
-                return result, duration, token_metrics, messages
+                return result, duration, token_metrics, messages, context_xml
             except Exception as e:
                 duration = (datetime.now() - start_time).total_seconds()
                 # Attach duration to exception for logging
@@ -345,24 +404,35 @@ def measure_execution_time(func: F) -> F:
                 f"{context_name} starting | args_count={len(args)} | kwargs={list(kwargs.keys())}"
             )
 
+            # Snapshot lm.history length before execution
+            history_before = _snapshot_history_len(args, kwargs)
+
             start_time = datetime.now()
             try:
                 result = func(*args, **kwargs)
                 duration = (datetime.now() - start_time).total_seconds()
 
-                # Extract metrics from result object
-                token_metrics = getattr(result, "token_metrics", None) or getattr(
-                    result, "token_usage", None
+                # Extract from lm.history (primary source)
+                messages, token_metrics, context_xml = _extract_from_lm_history(
+                    args, kwargs, history_before
                 )
-                messages = getattr(result, "messages", None)
+
+                # Fallback to result attributes
+                if messages is None:
+                    messages = getattr(result, "messages", None)
+                if token_metrics is None:
+                    token_metrics = getattr(result, "token_metrics", None) or getattr(
+                        result, "token_usage", None
+                    )
 
                 # Log successful completion with metrics
                 log_msg = f"{context_name} completed | duration={duration:.2f}s"
                 if token_metrics:
-                    log_msg += f" | tokens={getattr(token_metrics, 'total', 'N/A')}"
+                    total = getattr(token_metrics, "total_tokens", None) or getattr(token_metrics, "total", "N/A")
+                    log_msg += f" | tokens={total}"
                 logger.info(log_msg)
 
-                return result, duration, token_metrics, messages
+                return result, duration, token_metrics, messages, context_xml
             except Exception as e:
                 duration = (datetime.now() - start_time).total_seconds()
                 # Attach duration to exception for logging

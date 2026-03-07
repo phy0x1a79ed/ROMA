@@ -412,7 +412,7 @@ class ModuleRuntime:
         dag: TaskDAG,
         *,
         prepare_module_kwargs: Callable[[TaskNode, Optional[str]], dict],
-        process_result: Callable[[TaskNode, Any, float, Any, Any, TaskDAG], TaskNode],
+        process_result: Callable[[TaskNode, Any, float, Any, Any, Any, TaskDAG], TaskNode],
     ) -> TaskNode:
         """Execute agent with MLflow tracing and LM persistence.
 
@@ -484,6 +484,7 @@ class ModuleRuntime:
                         duration,
                         token_metrics,
                         messages,
+                        context_xml,
                     ) = await self._async_execute_module(agent, **module_kwargs)
 
                 # Persist LM trace
@@ -496,7 +497,7 @@ class ModuleRuntime:
                 await self._run_text_parser(task, result)
                 await self._run_filesystem_scanner(task, start_time)
 
-                return process_result(task, result, duration, token_metrics, messages, dag)
+                return process_result(task, result, duration, token_metrics, messages, context_xml, dag)
 
             except Exception as e:
                 if is_parse_error(e) and _parse_attempt < MAX_PARSE_RETRIES:
@@ -528,7 +529,7 @@ class ModuleRuntime:
             # Module.aforward now uses: (goal, *, context=...)
             return {"goal": t.goal, "context": context}
 
-        def process_result(t, result, duration, token_metrics, messages, dag):
+        def process_result(t, result, duration, token_metrics, messages, context_xml, dag):
             node_type = getattr(result, "node_type", None)
             if node_type is None:
                 raise ValueError(
@@ -572,7 +573,7 @@ class ModuleRuntime:
         def prepare_kwargs(t, context):
             return {"goal": t.goal, "context": context}
 
-        def process_result(t, result, duration, token_metrics, messages, dag):
+        def process_result(t, result, duration, token_metrics, messages, context_xml, dag):
             subtasks = getattr(result, "subtasks", None)
             if not subtasks or not isinstance(subtasks, list):
                 raise ValueError(
@@ -620,6 +621,7 @@ class ModuleRuntime:
             duration: float,
             token_metrics: Any,
             messages: Any,
+            context_xml: Any,
             dag: TaskDAG,
         ) -> TaskNode:
             output = getattr(result, "output", None)
@@ -628,11 +630,14 @@ class ModuleRuntime:
 
             # Record with context metadata
             metadata = {}
-            if context_captured and isinstance(context_captured, str):
+            # Store full context XML (up to 8KB) for observability
+            ctx = context_xml or context_captured
+            if ctx and isinstance(ctx, str):
+                metadata["context"] = ctx[:8000]
                 metadata["context_received"] = (
-                    context_captured[:200] + "..."
-                    if len(context_captured) > 200
-                    else context_captured
+                    ctx[:200] + "..."
+                    if len(ctx) > 200
+                    else ctx
                 )
                 if t.dependencies:
                     metadata["dependency_ids"] = list(t.dependencies)
@@ -688,6 +693,7 @@ class ModuleRuntime:
             duration: float,
             token_metrics: Any,
             messages: Any,
+            context_xml: Any,
             dag: TaskDAG,
         ) -> TaskNode:
             output = getattr(result, "output", None)
@@ -696,11 +702,14 @@ class ModuleRuntime:
 
             # Record with context metadata (forced execution has additional metadata)
             metadata = {"forced": True, "depth": t.depth}
-            if context_captured and isinstance(context_captured, str):
+            # Store full context XML (up to 8KB) for observability
+            ctx = context_xml or context_captured
+            if ctx and isinstance(ctx, str):
+                metadata["context"] = ctx[:8000]
                 metadata["context_received"] = (
-                    context_captured[:200] + "..."
-                    if len(context_captured) > 200
-                    else context_captured
+                    ctx[:200] + "..."
+                    if len(ctx) > 200
+                    else ctx
                 )
                 if t.dependencies:
                     metadata["dependency_ids"] = list(t.dependencies)
@@ -762,6 +771,7 @@ class ModuleRuntime:
             duration: float,
             token_metrics: Any,
             messages: Any,
+            context_xml: Any,
             dag: TaskDAG,
         ) -> TaskNode:
             synthesized = getattr(result, "synthesized_result", None)
@@ -818,6 +828,7 @@ class ModuleRuntime:
             duration: float,
             token_metrics: Any,
             messages: Any,
+            context_xml: Any,
             dag: TaskDAG,
         ) -> TaskNode:
             raw_verdict = getattr(result, "verdict", True)
