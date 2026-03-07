@@ -427,9 +427,14 @@ class ModuleRuntime:
 
             # Executor, Planner, Aggregator have specialized async context builders with artifact injection
             if agent_type == AgentType.EXECUTOR:
-                context = await self.context_manager.build_executor_context(
-                    task, tools_data, self, dag, injection_mode
-                )
+                if task.attempt_number > 0:
+                    context = await self.context_manager.build_retry_executor_context(
+                        task, tools_data, self, dag, injection_mode
+                    )
+                else:
+                    context = await self.context_manager.build_executor_context(
+                        task, tools_data, self, dag, injection_mode
+                    )
             elif agent_type == AgentType.PLANNER:
                 context = await self.context_manager.build_planner_context(
                     task, tools_data, self, dag, injection_mode

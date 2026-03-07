@@ -451,18 +451,48 @@ class EventLoopController:
             owning_dag.update_node(task)
             return self._make_completed_event(task, owning_dag)
 
-        # Retry: reset task to PENDING so it re-enters the atomize→execute pipeline.
-        # Inject verifier feedback so the next attempt can improve.
+        # Retry: snapshot current attempt, then reset to PENDING for fresh attempt.
         feedback = (task.metadata or {}).get("verify_feedback", "")
         logger.info(
-            "Verifier rejected task %s (retry %d/%d): %s",
+            "Verifier rejected task %s (attempt %d, retry %d/%d): %s",
             task.task_id,
+            task.attempt_number,
             retry_count + 1,
             self.max_verify_retries,
             feedback[:200],
         )
-        task = task.update_metadata(verify_retry=retry_count + 1)
-        task = task.transition_to(TaskStatus.PENDING)
+
+        # 1. Snapshot current attempt into attempt_history
+        attempt_record = {
+            "attempt_number": task.attempt_number,
+            "execution_history": {
+                k: v.model_dump() for k, v in task.execution_history.items()
+            },
+            "subgraph_id": task.subgraph_id,
+            "result": str(task.result)[:2000] if task.result else None,
+            "verify_verdict": False,
+            "verify_feedback": feedback,
+        }
+        history = list(task.attempt_history) + [attempt_record]
+
+        # 2. Reset node: clear execution state, increment attempt, detach subgraph
+        task = task.model_copy(update={
+            "attempt_number": task.attempt_number + 1,
+            "attempt_history": history,
+            "execution_history": {},
+            "subgraph_id": None,
+            "result": None,
+            "error": None,
+            "node_type": None,
+            "started_at": None,
+            "completed_at": None,
+            "status": TaskStatus.PENDING,
+        })
+        # 3. Inject verifier feedback for context crafting
+        task = task.update_metadata(
+            verify_feedback=feedback,
+            verify_retry=task.attempt_number,
+        )
         owning_dag.update_node(task)
 
         key = (owning_dag.dag_id, task.task_id)

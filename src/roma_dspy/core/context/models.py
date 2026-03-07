@@ -566,6 +566,60 @@ class PlannerSpecificContext(BaseModel):
         return FundamentalContext._escape_xml(text)
 
 
+class VerifierFeedbackContext(BaseModel):
+    """
+    Context injected into retry attempts with distilled verifier feedback.
+
+    When a verifier rejects a task's output, previous attempt summaries
+    and feedback are crafted into this context so the next attempt can
+    address the issues without repeating the same mistakes.
+    """
+
+    attempt_number: int = Field(
+        ..., description="Current attempt number (1-based for display)"
+    )
+    max_attempts: int = Field(
+        ..., description="Maximum number of attempts allowed"
+    )
+    previous_attempts: List[dict] = Field(
+        default_factory=list,
+        description="Summaries of previous attempts with feedback",
+    )
+
+    def to_xml(self) -> str:
+        """Render concise XML with distilled feedback from all prior attempts."""
+        xml_parts = ["<retry_context>"]
+        xml_parts.append(f"  <attempt>{self.attempt_number} of {self.max_attempts}</attempt>")
+
+        if self.previous_attempts:
+            xml_parts.append("  <previous_attempts>")
+            for prev in self.previous_attempts:
+                num = prev.get("attempt_number", "?")
+                output_summary = self._escape_xml(
+                    str(prev.get("output_summary", ""))[:500]
+                )
+                feedback = self._escape_xml(
+                    str(prev.get("feedback", ""))[:500]
+                )
+                xml_parts.append(f'    <attempt number="{num}">')
+                xml_parts.append(f"      <output_summary>{output_summary}</output_summary>")
+                xml_parts.append(f"      <feedback>{feedback}</feedback>")
+                xml_parts.append("    </attempt>")
+            xml_parts.append("  </previous_attempts>")
+
+        xml_parts.append(
+            "  <instruction>Fresh attempt. Address the feedback above. "
+            "Do NOT continue previous work — start clean.</instruction>"
+        )
+        xml_parts.append("</retry_context>")
+        return "\n".join(xml_parts)
+
+    @staticmethod
+    def _escape_xml(text: str) -> str:
+        """Escape XML special characters."""
+        return FundamentalContext._escape_xml(text)
+
+
 class AggregatorSpecificContext(BaseModel):
     """
     Context specific to Aggregator agents for synthesizing subtask results.

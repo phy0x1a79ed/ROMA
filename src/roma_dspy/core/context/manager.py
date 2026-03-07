@@ -22,6 +22,7 @@ from roma_dspy.core.context.models import (
     ExecutorSpecificContext,
     PlannerSpecificContext,
     AggregatorSpecificContext,
+    VerifierFeedbackContext,
     DependencyResult,
     ParentResult,
     SiblingResult,
@@ -459,6 +460,46 @@ class ContextManager:
             include_file_system=False,
             specific_context=specific.to_xml(),
         )
+
+    async def build_retry_executor_context(
+        self,
+        task: "TaskNode",
+        tools_data: List[dict],
+        runtime: "ModuleRuntime",
+        dag: "TaskDAG",
+        injection_mode: "ArtifactInjectionMode" = ArtifactInjectionMode.DEPENDENCIES,
+    ) -> str:
+        """
+        Build executor context for a retry attempt, appending verifier feedback.
+
+        Constructs the normal executor context then appends a VerifierFeedbackContext
+        XML block built from the task's attempt_history.
+        """
+        # Build normal executor context
+        base_context = await self.build_executor_context(
+            task, tools_data, runtime, dag, injection_mode
+        )
+
+        # Build retry feedback from attempt_history
+        max_attempts = (task.metadata or {}).get("verify_retry", 0) + 1
+        previous_attempts = []
+        for attempt in task.attempt_history:
+            previous_attempts.append({
+                "attempt_number": attempt.get("attempt_number", 0),
+                "output_summary": attempt.get("result", ""),
+                "feedback": attempt.get("verify_feedback", ""),
+            })
+
+        retry_ctx = VerifierFeedbackContext(
+            attempt_number=task.attempt_number + 1,
+            max_attempts=max_attempts + 1,
+            previous_attempts=previous_attempts,
+        )
+
+        # Inject retry context before closing </context> tag
+        if base_context.endswith("</context>"):
+            return base_context[:-len("</context>")] + retry_ctx.to_xml() + "\n</context>"
+        return base_context + "\n" + retry_ctx.to_xml()
 
     def build_basic_context(
         self,

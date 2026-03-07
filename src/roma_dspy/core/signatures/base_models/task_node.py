@@ -138,6 +138,13 @@ class TaskNode(BaseModel):
     started_at: Optional[datetime] = Field(default=None)
     completed_at: Optional[datetime] = Field(default=None)
 
+    # Attempt tracking for retry-as-new-attempts
+    attempt_number: int = Field(default=0, description="Current attempt number (0-based)")
+    attempt_history: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Snapshots of previous failed attempts with verifier feedback",
+    )
+
     # Version for optimistic locking
     version: int = Field(default=0)
 
