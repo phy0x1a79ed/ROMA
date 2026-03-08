@@ -23,6 +23,7 @@ from roma_dspy.core.context.models import (
     PlannerSpecificContext,
     AggregatorSpecificContext,
     VerifierFeedbackContext,
+    AncestorResult,
     DependencyResult,
     ParentResult,
     SiblingResult,
@@ -169,6 +170,52 @@ class ContextManager:
 
         return []
 
+    async def _build_ancestry(
+        self,
+        task: "TaskNode",
+        runtime: "ModuleRuntime",
+        dag: "TaskDAG",
+    ) -> List[AncestorResult]:
+        """Walk from task's parent up to root, collecting completed results.
+
+        Returns ancestor results in root-first order (general -> specific).
+        Context bloat guard: if the chain has >2 nodes, only keep root (depth 0)
+        and the direct parent — intermediate ancestors are dropped.
+        """
+        from loguru import logger
+
+        ancestors: list[AncestorResult] = []
+        current_id = task.parent_id
+
+        while current_id is not None:
+            try:
+                ancestor_task, _ = dag.find_node(current_id)
+            except ValueError:
+                logger.debug(
+                    f"[_build_ancestry] Ancestor {current_id[:8]}... not found in DAG"
+                )
+                break
+
+            result_str = runtime.context_store.get_result(current_id)
+            if result_str:
+                ancestors.append(
+                    AncestorResult(
+                        goal=ancestor_task.goal,
+                        result=result_str,
+                        depth=ancestor_task.depth,
+                    )
+                )
+            current_id = ancestor_task.parent_id
+
+        # Reverse to root-first order
+        ancestors.reverse()
+
+        # Context bloat guard: keep only root + direct parent if chain > 2
+        if len(ancestors) > 2:
+            ancestors = [ancestors[0], ancestors[-1]]
+
+        return ancestors
+
     async def _build_executor_specific(
         self,
         task: "TaskNode",
@@ -177,7 +224,7 @@ class ContextManager:
         injection_mode: ArtifactInjectionMode = ArtifactInjectionMode.DEPENDENCIES,
     ) -> ExecutorSpecificContext:
         """
-        Build executor-specific context with dependency results and artifacts.
+        Build executor-specific context with ancestry, dependency results, and artifacts.
 
         Args:
             task: Current task node
@@ -186,10 +233,13 @@ class ContextManager:
             injection_mode: Controls which artifacts are injected
 
         Returns:
-            ExecutorSpecificContext with dependency results and artifact references
+            ExecutorSpecificContext with ancestry, dependency results, and artifact references
         """
-        dependency_results = []
+        # Build ancestry chain
+        ancestor_results = await self._build_ancestry(task, runtime, dag)
 
+        # Build dependency results (immediate dependencies only)
+        dependency_results = []
         if task.dependencies:
             for dep_id in task.dependencies:
                 result_str = runtime.context_store.get_result(dep_id)
@@ -211,6 +261,7 @@ class ContextManager:
         )
 
         return ExecutorSpecificContext(
+            ancestor_results=ancestor_results,
             dependency_results=dependency_results,
             available_artifacts=available_artifacts,
         )
@@ -223,7 +274,7 @@ class ContextManager:
         injection_mode: ArtifactInjectionMode = ArtifactInjectionMode.DEPENDENCIES,
     ) -> PlannerSpecificContext:
         """
-        Build planner-specific context with parent/sibling results and artifacts.
+        Build planner-specific context with ancestry, sibling results, and artifacts.
 
         Args:
             task: Current task node
@@ -232,31 +283,14 @@ class ContextManager:
             injection_mode: Controls which artifacts are injected
 
         Returns:
-            PlannerSpecificContext with parent/sibling results and artifact references
+            PlannerSpecificContext with ancestry, sibling results, and artifact references
         """
-        parent_results = []
-        sibling_results = []
-
-        # Get parent result
-        if task.parent_id:
-            parent_result = runtime.context_store.get_result(task.parent_id)
-            if parent_result:
-                # BUG FIX: Use find_node for hierarchical lookup (parent is in parent DAG, not subgraph)
-                try:
-                    parent_task, _ = dag.find_node(task.parent_id)
-                    parent_results.append(
-                        ParentResult(goal=parent_task.goal, result=parent_result)
-                    )
-                except ValueError:
-                    from loguru import logger
-
-                    logger.warning(
-                        f"[build_planner_context] Parent task {task.parent_id[:8]}... not found in DAG hierarchy"
-                    )
+        # Build ancestry chain (replaces single parent_results)
+        ancestor_results = await self._build_ancestry(task, runtime, dag)
 
         # Get sibling results
+        sibling_results = []
         if task.parent_id:
-            # BUG FIX: Use find_node for hierarchical lookup (parent is in parent DAG, not subgraph)
             try:
                 parent, _ = dag.find_node(task.parent_id)
             except ValueError:
@@ -280,7 +314,6 @@ class ContextManager:
                             )
 
         # Query artifacts from parent using centralized method
-        # Note: Siblings don't have task_id in SiblingResult model, so we only query parent
         task_ids = [task.parent_id] if task.parent_id else []
         available_artifacts = await self._query_artifacts_for_context(
             task_ids=task_ids,
@@ -290,7 +323,7 @@ class ContextManager:
         )
 
         return PlannerSpecificContext(
-            parent_results=parent_results,
+            ancestor_results=ancestor_results,
             sibling_results=sibling_results,
             available_artifacts=available_artifacts,
         )

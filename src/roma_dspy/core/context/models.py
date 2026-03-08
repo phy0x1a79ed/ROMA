@@ -378,6 +378,14 @@ class FundamentalContext(BaseModel):
 # ==================== Agent-Specific Context Components ====================
 
 
+class AncestorResult(BaseModel):
+    """Result from an ancestor task in the decomposition hierarchy."""
+
+    goal: str = Field(..., description="Ancestor task's goal")
+    result: str = Field(..., description="Ancestor task's completed output")
+    depth: int = Field(..., description="Depth in the task tree (0 = root)")
+
+
 class DependencyResult(BaseModel):
     """
     Result from a dependency task that the current task builds upon.
@@ -406,20 +414,18 @@ class ExecutorSpecificContext(BaseModel):
     """
     Context specific to Executor agents for atomic task execution.
 
-    Executors perform actual work (API calls, computations, tool usage). They often
-    depend on results from previous tasks. This context provides those dependency results
-    and any artifacts created by dependencies so the executor can build upon prior work.
+    Executors perform actual work (API calls, computations, tool usage). They receive:
+    - Ancestry chain: completed outputs from root -> parent (general -> specific)
+    - Dependency results: outputs from sibling tasks this task depends on
+    - Artifacts: files/data created by dependency tasks
 
-    Example use case:
-    - Current task: "Analyze the price data"
-    - Dependency: "Fetch price data" (already completed)
-    - This context provides:
-      1. Text result from dependency
-      2. Artifacts created by dependency (e.g., price_data.parquet)
-
-    Empty dependency_results and available_artifacts means this is an independent task.
+    Empty lists means this is an independent, top-level task.
     """
 
+    ancestor_results: List[AncestorResult] = Field(
+        default_factory=list,
+        description="Completed outputs from ancestor tasks (root->parent, top-down)",
+    )
     dependency_results: List[DependencyResult] = Field(
         default_factory=list,
         description="Results from tasks this task depends on, provided as input context",
@@ -430,11 +436,21 @@ class ExecutorSpecificContext(BaseModel):
     )
 
     def to_xml(self) -> str:
-        """Serialize dependency results and artifacts to XML for executor consumption."""
-        if not self.dependency_results and not self.available_artifacts:
-            return "<executor_specific>No dependencies or artifacts</executor_specific>"
+        """Serialize ancestry, dependency results, and artifacts to XML for executor consumption."""
+        if not self.ancestor_results and not self.dependency_results and not self.available_artifacts:
+            return "<executor_specific>No ancestry, dependencies, or artifacts</executor_specific>"
 
         xml_parts = ["<executor_specific>"]
+
+        # Ancestry chain section (root-first: general context -> specific)
+        if self.ancestor_results:
+            xml_parts.append("  <ancestry>")
+            for anc in self.ancestor_results:
+                xml_parts.append(f'    <ancestor depth="{anc.depth}">')
+                xml_parts.append(f"      <goal>{self._escape_xml(anc.goal)}</goal>")
+                xml_parts.append(f"      <result>{self._escape_xml(anc.result)}</result>")
+                xml_parts.append("    </ancestor>")
+            xml_parts.append("  </ancestry>")
 
         # Dependency results section
         if self.dependency_results:
@@ -493,25 +509,19 @@ class PlannerSpecificContext(BaseModel):
     Context specific to Planner agents for task decomposition.
 
     Planners break complex tasks into subtasks. They benefit from understanding:
-    - Parent task context: What larger goal are we decomposing?
+    - Ancestry chain: completed outputs from root -> parent (general -> specific)
     - Sibling results: What work has already been done at this level?
     - Available artifacts: What data/outputs exist from parent/sibling tasks?
 
     This helps planners:
-    - Maintain consistency with parent's intent
+    - Maintain consistency with the overall objective and parent's intent
     - Avoid duplicating work done by siblings
     - Coordinate subtask planning across the decomposition tree
-    - Understand what artifacts are available for subtasks to use
-
-    Example use case:
-    - Parent: "Analyze crypto market" decomposed into 3 subtasks
-    - Subtask 1 & 2 already completed, created data artifacts
-    - Subtask 3's planner sees siblings' results and artifacts to avoid duplication
     """
 
-    parent_results: List[ParentResult] = Field(
+    ancestor_results: List[AncestorResult] = Field(
         default_factory=list,
-        description="Results from parent task(s) for context and alignment",
+        description="Completed outputs from ancestor tasks (root->parent, top-down)",
     )
     sibling_results: List[SiblingResult] = Field(
         default_factory=list,
@@ -523,20 +533,18 @@ class PlannerSpecificContext(BaseModel):
     )
 
     def to_xml(self) -> str:
-        """Serialize parent, sibling context, and artifacts to XML."""
+        """Serialize ancestry, sibling context, and artifacts to XML."""
         xml_parts = ["<planner_specific>"]
 
-        # Parent results
-        if self.parent_results:
-            xml_parts.append("  <parent_results>")
-            for parent in self.parent_results:
-                xml_parts.append("    <parent>")
-                xml_parts.append(f"      <goal>{self._escape_xml(parent.goal)}</goal>")
-                xml_parts.append(
-                    f"      <result>{self._escape_xml(parent.result)}</result>"
-                )
-                xml_parts.append("    </parent>")
-            xml_parts.append("  </parent_results>")
+        # Ancestry chain (root-first: general context -> specific)
+        if self.ancestor_results:
+            xml_parts.append("  <ancestry>")
+            for anc in self.ancestor_results:
+                xml_parts.append(f'    <ancestor depth="{anc.depth}">')
+                xml_parts.append(f"      <goal>{self._escape_xml(anc.goal)}</goal>")
+                xml_parts.append(f"      <result>{self._escape_xml(anc.result)}</result>")
+                xml_parts.append("    </ancestor>")
+            xml_parts.append("  </ancestry>")
 
         # Sibling results
         if self.sibling_results:

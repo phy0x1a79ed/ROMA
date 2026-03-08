@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict, model_validator
-from typing import Optional, Dict, Any, FrozenSet, List
+from typing import Callable, Optional, Dict, Any, FrozenSet, List
+from contextvars import ContextVar
 from roma_dspy.types import (
     TaskType,
     NodeType,
@@ -11,6 +12,16 @@ from roma_dspy.types import (
 )
 from datetime import datetime, timezone
 from uuid import uuid4
+
+# Default: ROMA's own UUID generation. Spark overrides this via set_id_factory().
+_id_factory: ContextVar[Callable[[], str]] = ContextVar(
+    "_id_factory", default=lambda: str(uuid4())
+)
+
+
+def set_id_factory(factory: Callable[[], str]) -> None:
+    """Override the task ID factory (e.g. Spark injects its own hex UUIDs)."""
+    _id_factory.set(factory)
 
 
 class TaskNode(BaseModel):
@@ -39,7 +50,7 @@ class TaskNode(BaseModel):
 
     # Identity and structure
     task_id: str = Field(
-        default_factory=lambda: str(uuid4()), description="Unique task identifier"
+        default_factory=lambda: _id_factory.get()(), description="Unique task identifier"
     )
 
     def model_copy(
