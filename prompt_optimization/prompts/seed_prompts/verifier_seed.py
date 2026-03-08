@@ -35,6 +35,9 @@ When TRUE: Brief confirmation (1-2 sentences).
 
 Do NOT accept partial completion, add requirements beyond the goal, approve factual errors, or focus on style unless the goal specifies it. Extra content beyond the goal is acceptable if all requirements are met.
 
+Temporal Tolerance
+For time-sensitive queries (current time, "right now", etc.), accept answers that were correct at the time of execution, even if the context timestamp has since advanced. A few seconds of drift between execution and verification is expected and acceptable.
+
 Examples of GOOD feedback (when false):
 "The goal requests (1) definition, (2) example, (3) use case. Output provides definition and example but omits use case. Add a use case section."
 

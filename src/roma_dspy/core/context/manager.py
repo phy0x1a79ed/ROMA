@@ -23,6 +23,8 @@ from roma_dspy.core.context.models import (
     PlannerSpecificContext,
     AggregatorSpecificContext,
     VerifierFeedbackContext,
+    AgentExplanationContext,
+    RetryHintContext,
     AncestorResult,
     DependencyResult,
     ParentResult,
@@ -456,11 +458,21 @@ class ContextManager:
         specific = await self._build_executor_specific(
             task, runtime, dag, injection_mode
         )
+        # Inject atomizer explanation if available
+        meta = task.metadata or {}
+        explanation_xml = ""
+        atomizer_expl = meta.get("atomizer_explanation")
+        if atomizer_expl:
+            expl_ctx = AgentExplanationContext(atomizer_explanation=atomizer_expl)
+            explanation_xml = expl_ctx.to_xml()
+        combined_specific = specific.to_xml()
+        if explanation_xml:
+            combined_specific += "\n" + explanation_xml
         return self._build_context(
             task,
             tools_data,
             include_file_system=True,
-            specific_context=specific.to_xml(),
+            specific_context=combined_specific,
         )
 
     async def build_aggregator_context(
@@ -538,6 +550,7 @@ class ContextManager:
         self,
         task: "TaskNode",
         tools_data: List[dict],
+        agent_type: Optional[str] = None,
     ) -> str:
         """
         Build fundamental context for agents without specific context needs (Atomizer, Verifier).
@@ -545,10 +558,38 @@ class ContextManager:
         Args:
             task: Current task node
             tools_data: Available tools information
+            agent_type: Optional agent type hint ("atomizer" or "verifier") for
+                injecting relevant explanations/retry hints from task metadata.
 
         Returns:
-            Complete XML context string with only fundamental context
+            Complete XML context string with fundamental context + optional agent-specific hints
         """
+        specific_parts: list[str] = []
+        meta = task.metadata or {}
+
+        if agent_type == "verifier":
+            # Inject executor explanation so verifier understands what was done
+            executor_expl = meta.get("executor_explanation")
+            if executor_expl:
+                expl_ctx = AgentExplanationContext(executor_explanation=executor_expl)
+                xml = expl_ctx.to_xml()
+                if xml:
+                    specific_parts.append(xml)
+
+        if agent_type == "atomizer" and task.attempt_number > 0:
+            # Inject retry hint with previous classification and verifier feedback
+            prev_type = meta.get("previous_node_type")
+            feedback = meta.get("verify_feedback")
+            if prev_type:
+                hint = RetryHintContext(
+                    previous_node_type=prev_type,
+                    verifier_feedback=feedback,
+                )
+                xml = hint.to_xml()
+                if xml:
+                    specific_parts.append(xml)
+
+        specific_context = "\n".join(specific_parts) if specific_parts else None
         return self._build_context(
-            task, tools_data, include_file_system=False, specific_context=None
+            task, tools_data, include_file_system=False, specific_context=specific_context
         )

@@ -453,7 +453,10 @@ class ModuleRuntime:
                 )
             else:
                 # Atomizer, Verifier use fundamental context only (no artifacts)
-                context = self.context_manager.build_basic_context(task, tools_data)
+                context = self.context_manager.build_basic_context(
+                    task, tools_data,
+                    agent_type=agent_type.value.lower(),
+                )
 
         parse_failures: list[ParseFailure] = []
 
@@ -550,6 +553,10 @@ class ModuleRuntime:
                 messages=messages,
             )
             t = t.set_node_type(node_type)
+            # Store atomizer explanation for downstream agents
+            expl = getattr(result, "explanation", None)
+            if expl:
+                t = t.update_metadata(atomizer_explanation=expl)
             dag.update_node(t)
             return t
 
@@ -593,6 +600,10 @@ class ModuleRuntime:
                 messages=messages,
             )
             t = self._create_subtask_graph(t, dag, result)
+            # Store planner explanation for downstream agents
+            expl = getattr(result, "explanation", None)
+            if expl:
+                t = t.update_metadata(planner_explanation=expl)
             t = t.transition_to(TaskStatus.PLAN_DONE)
             dag.update_node(t)
             return t
@@ -630,10 +641,10 @@ class ModuleRuntime:
 
             # Record with context metadata
             metadata = {}
-            # Store full context XML (up to 8KB) for observability
+            # Store full context XML (up to 32KB) for observability
             ctx = context_xml or context_captured
             if ctx and isinstance(ctx, str):
-                metadata["context"] = ctx[:8000]
+                metadata["context"] = ctx[:32000]
                 metadata["context_received"] = (
                     ctx[:200] + "..."
                     if len(ctx) > 200
@@ -655,6 +666,10 @@ class ModuleRuntime:
                 token_metrics=token_metrics,
                 messages=messages,
             )
+            # Store executor explanation for verifier
+            expl = getattr(result, "explanation", None)
+            if expl:
+                t = t.update_metadata(executor_explanation=expl)
             # Store the result but keep status as EXECUTING so the verifier
             # can transition to VERIFYING.  COMPLETED is terminal.
             t = t.model_copy(update={"result": output})
@@ -702,10 +717,10 @@ class ModuleRuntime:
 
             # Record with context metadata (forced execution has additional metadata)
             metadata = {"forced": True, "depth": t.depth}
-            # Store full context XML (up to 8KB) for observability
+            # Store full context XML (up to 32KB) for observability
             ctx = context_xml or context_captured
             if ctx and isinstance(ctx, str):
-                metadata["context"] = ctx[:8000]
+                metadata["context"] = ctx[:32000]
                 metadata["context_received"] = (
                     ctx[:200] + "..."
                     if len(ctx) > 200
@@ -727,6 +742,10 @@ class ModuleRuntime:
                 token_metrics=token_metrics,
                 messages=messages,
             )
+            # Store executor explanation for verifier
+            expl = getattr(result, "explanation", None)
+            if expl:
+                t = t.update_metadata(executor_explanation=expl)
             # Store the result but keep status as EXECUTING so the verifier
             # can transition to VERIFYING.  COMPLETED is terminal.
             t = t.model_copy(update={"result": output})

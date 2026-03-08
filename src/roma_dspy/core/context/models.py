@@ -604,10 +604,10 @@ class VerifierFeedbackContext(BaseModel):
             for prev in self.previous_attempts:
                 num = prev.get("attempt_number", "?")
                 output_summary = self._escape_xml(
-                    str(prev.get("output_summary", ""))[:500]
+                    str(prev.get("output_summary", ""))[:32000]
                 )
                 feedback = self._escape_xml(
-                    str(prev.get("feedback", ""))[:500]
+                    str(prev.get("feedback", ""))[:32000]
                 )
                 xml_parts.append(f'    <attempt number="{num}">')
                 xml_parts.append(f"      <output_summary>{output_summary}</output_summary>")
@@ -621,6 +621,58 @@ class VerifierFeedbackContext(BaseModel):
         )
         xml_parts.append("</retry_context>")
         return "\n".join(xml_parts)
+
+    @staticmethod
+    def _escape_xml(text: str) -> str:
+        """Escape XML special characters."""
+        return FundamentalContext._escape_xml(text)
+
+
+class AgentExplanationContext(BaseModel):
+    """Explanations from prior agents in the pipeline for this task.
+
+    Captures the reasoning chain across agents so downstream agents can
+    understand why upstream decisions were made.
+    """
+
+    atomizer_explanation: Optional[str] = None
+    planner_explanation: Optional[str] = None
+    executor_explanation: Optional[str] = None
+
+    def to_xml(self) -> str:
+        parts = []
+        if self.atomizer_explanation:
+            parts.append(f"  <atomizer>{self._escape_xml(self.atomizer_explanation)}</atomizer>")
+        if self.planner_explanation:
+            parts.append(f"  <planner>{self._escape_xml(self.planner_explanation)}</planner>")
+        if self.executor_explanation:
+            parts.append(f"  <executor>{self._escape_xml(self.executor_explanation)}</executor>")
+        if not parts:
+            return ""
+        return "<prior_reasoning>\n" + "\n".join(parts) + "\n</prior_reasoning>"
+
+    @staticmethod
+    def _escape_xml(text: str) -> str:
+        """Escape XML special characters."""
+        return FundamentalContext._escape_xml(text)
+
+
+class RetryHintContext(BaseModel):
+    """Context hint for retry attempts, preserving prior classification."""
+
+    previous_node_type: Optional[str] = None
+    verifier_feedback: Optional[str] = None
+
+    def to_xml(self) -> str:
+        if not self.previous_node_type:
+            return ""
+        parts = ["<retry_hint>"]
+        parts.append(f"  <previous_classification>{self._escape_xml(self.previous_node_type)}</previous_classification>")
+        if self.verifier_feedback:
+            parts.append(f"  <verifier_feedback>{self._escape_xml(self.verifier_feedback)}</verifier_feedback>")
+        parts.append("  <note>You previously classified this as above. Consider the feedback and make your own call, but give weight to your previous decision.</note>")
+        parts.append("</retry_hint>")
+        return "\n".join(parts)
 
     @staticmethod
     def _escape_xml(text: str) -> str:

@@ -469,13 +469,16 @@ class EventLoopController:
                 k: v.model_dump() for k, v in task.execution_history.items()
             },
             "subgraph_id": task.subgraph_id,
-            "result": str(task.result)[:2000] if task.result else None,
+            "result": str(task.result)[:32000] if task.result else None,
             "verify_verdict": False,
             "verify_feedback": feedback,
         }
         history = list(task.attempt_history) + [attempt_record]
 
-        # 2. Reset node: clear execution state, increment attempt, detach subgraph
+        # 2. Preserve previous classification for atomizer retry hint
+        prev_node_type = str(task.node_type) if task.node_type else None
+
+        # 3. Reset node: clear execution state, increment attempt, detach subgraph
         task = task.model_copy(update={
             "attempt_number": task.attempt_number + 1,
             "attempt_history": history,
@@ -488,10 +491,11 @@ class EventLoopController:
             "completed_at": None,
             "status": TaskStatus.PENDING,
         })
-        # 3. Inject verifier feedback for context crafting
+        # 4. Inject verifier feedback and previous classification for context crafting
         task = task.update_metadata(
             verify_feedback=feedback,
             verify_retry=task.attempt_number,
+            previous_node_type=prev_node_type,
         )
         owning_dag.update_node(task)
 
