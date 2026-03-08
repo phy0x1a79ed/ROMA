@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DataType(str, Enum):
@@ -31,8 +31,7 @@ class ProtocolInfo(BaseModel):
     change_7d: Optional[Decimal] = None
     mcap: Optional[Decimal] = None
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ProtocolFees(BaseModel):
@@ -47,8 +46,7 @@ class ProtocolFees(BaseModel):
     chains: List[str] = Field(default_factory=list)
     total_data_chart: List[List] = Field(default_factory=list, alias="totalDataChart")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class YieldPool(BaseModel):
@@ -64,8 +62,7 @@ class YieldPool(BaseModel):
     tvl_usd: Optional[Decimal] = Field(None, alias="tvlUsd")
     underlying_tokens: List[str] = Field(default_factory=list, alias="underlyingTokens")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class TVLDataPoint(BaseModel):
@@ -74,5 +71,4 @@ class TVLDataPoint(BaseModel):
     date: int = Field(description="Unix timestamp")
     total_liquidity_usd: Decimal = Field(alias="totalLiquidityUSD")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)

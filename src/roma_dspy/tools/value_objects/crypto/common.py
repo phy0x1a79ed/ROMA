@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Optional, Any, Dict
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ResponseStatus(str, Enum):
@@ -49,10 +49,7 @@ class BaseResponse(BaseModel):
         default_factory=datetime.utcnow, description="Response timestamp"
     )
 
-    class Config:
-        """Pydantic config."""
-
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class PricePoint(BaseModel):

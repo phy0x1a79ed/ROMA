@@ -37,10 +37,6 @@ class ToolkitLifecycleEvent(BaseModel):
     error: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        """Pydantic config."""
-
-        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 class ToolInvocationEvent(BaseModel):
@@ -74,10 +70,6 @@ class ToolInvocationEvent(BaseModel):
     error: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        """Pydantic config."""
-
-        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 class ExecutionEventData(BaseModel):
@@ -107,13 +99,6 @@ class ExecutionEventData(BaseModel):
     event_data: Dict[str, Any] = Field(default_factory=dict)
     dropped: bool = False
 
-    class Config:
-        """Pydantic config."""
-
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            ExecutionEventType: lambda v: v.value,
-        }
 
 
 class ToolkitMetricsSummary(BaseModel):

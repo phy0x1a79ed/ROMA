@@ -4,7 +4,7 @@ Module execution result tracking for comprehensive node history.
 
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass, field
 
 
@@ -150,8 +150,7 @@ class ModuleResult(BaseModel):
         default=None, description="Full prompt/response messages"
     )
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class StateTransition(BaseModel):
@@ -212,5 +211,4 @@ class ExecutionEvent(BaseModel):
     )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)

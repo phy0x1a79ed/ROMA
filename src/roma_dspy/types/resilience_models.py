@@ -3,7 +3,7 @@ Pydantic models for resilience patterns.
 """
 
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from collections import deque
 
 from roma_dspy.types.task_type import TaskType
@@ -49,8 +49,7 @@ class CircuitMetrics(BaseModel):
     last_failure_time: Optional[float] = None
     failure_times: deque = Field(default_factory=lambda: deque(maxlen=100))
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def record_success(self) -> None:
         """Record successful execution."""

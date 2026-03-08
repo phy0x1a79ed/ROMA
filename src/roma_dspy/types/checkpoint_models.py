@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from roma_dspy.types.checkpoint_types import (
     CheckpointState,
@@ -130,8 +130,7 @@ class CheckpointData(BaseModel):
         default=None, description="Path to file-based checkpoint"
     )
 
-    class Config:
-        json_encoders = {datetime: lambda v: v.isoformat(), set: lambda v: list(v)}
+    model_config = ConfigDict(ser_json_timedelta="iso8601")
 
 
 class RecoveryPlan(BaseModel):

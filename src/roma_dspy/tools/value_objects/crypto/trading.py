@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import List, Optional
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator, computed_field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, computed_field
 
 
 class OrderSide(str, Enum):
@@ -78,10 +78,7 @@ class OrderBookLevel(BaseModel):
             return Decimal(str(v))
         return v
 
-    class Config:
-        """Pydantic config."""
-
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 class OrderBookSnapshot(BaseModel):
